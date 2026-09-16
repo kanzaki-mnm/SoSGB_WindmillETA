@@ -1,115 +1,100 @@
 ﻿using BokuMono;
 using HarmonyLib;
+using TMPro;
 using UnityEngine;
 
 namespace WindmillETA
 {
-    /// <summary>
-    /// 風車の作成個数指定画面に完了予定時刻を追加します。
-    /// </summary>
+    /// <summary>参考時間の下に、横幅全体を使う完了予定欄を表示します。</summary>
     [HarmonyPatch(typeof(UIWindmillCraftCountDialog), "OnUpdate")]
-    public static class WindmillCraftCountDialogPatch
+    internal static class WindmillCraftCountDialogPatch
     {
-        public static void Postfix(UIWindmillCraftCountDialog __instance)
+        private const string EtaObjectName = "WindmillETA_Completion";
+        private static bool warnedMissingDuration;
+
+        private static void Prefix(UIWindmillCraftCountDialog __instance, out WindmillDurationCapture __state)
         {
-            if (__instance is null || __instance.timeText is null)
+            __state = new WindmillDurationCapture(__instance.time);
+            // Never leave a previous recipe's ETA visible if this update cannot calculate it.
+            var existing = __instance.timeText?.transform.parent?.Find(EtaObjectName);
+            if (existing != null) existing.gameObject.SetActive(false);
+        }
+
+        private static void Finalizer(WindmillDurationCapture __state)
+        {
+            __state?.Dispose();
+        }
+
+        private static void Postfix(UIWindmillCraftCountDialog __instance, WindmillDurationCapture __state)
+        {
+            if (__instance is null || __instance.timeText is null) return;
+            var durationMinutes = __state?.Minutes;
+            if (!durationMinutes.HasValue)
             {
+                if (!warnedMissingDuration)
+                {
+                    Plugin.LogSource.LogWarning("No native duration captured for the count dialog. Skipping ETA; please report this with LogOutput.log.");
+                    warnedMissingDuration = true;
+                }
                 return;
             }
+            var dateManager = DateManager.Instance;
+            if (dateManager == null) return;
+            var source = __instance.timeText;
+            var now = dateManager.Now;
+            var end = now.AddMinutes(durationMinutes.Value);
+            var etaText = WindmillEtaFormatter.Format(now, end, source);
+            var eta = GetOrCreateEta(source);
+            if (eta == null) return;
 
-            // 見た目調整
-            SetupDisplay(__instance);
-
-            // 完了予定時刻を計算
-            var durationMinutes = ParseDurationMinutes(__instance.timeText.text);
-            var now = DateManager.Instance.Now;
-            var end = now.AddMinutes(durationMinutes);
-
-            var etaText = WindmillEtaFormatter.Format(now, end);
-
-            // 表示
-            __instance.timeText.text += "\n" + etaText;
+            // Follow language-specific fonts and colors, without cloning game scripts
+            // that could overwrite the text or shrink it on subsequent UI updates.
+            eta.font = source.font;
+            eta.fontSharedMaterial = source.fontSharedMaterial;
+            eta.fontStyle = source.fontStyle;
+            eta.color = source.color;
+            eta.fontSize = 24f;
+            eta.enableAutoSizing = false;
+            eta.enableWordWrapping = false;
+            eta.overflowMode = TextOverflowModes.Overflow;
+            eta.alignment = TextAlignmentOptions.MidlineRight;
+            eta.margin = Vector4.zero;
+            eta.raycastTarget = false;
+            eta.text = "→ " + etaText;
+            eta.gameObject.SetActive(true);
         }
 
-        private static void SetupDisplay(UIWindmillCraftCountDialog instance)
+        private static TextMeshProUGUI GetOrCreateEta(LocalizedTextMeshPro source)
         {
-            SetupLabels(instance);
-            SetupTimeArea(instance);
-        }
-
-        private static void SetupLabels(UIWindmillCraftCountDialog instance)
-        {
-            var parent = instance.timeText.transform.parent;
-
-            if (parent == null)
+            var timeArea = source.transform.parent;
+            if (timeArea == null) return null;
+            var existing = timeArea.Find(EtaObjectName);
+            TextMeshProUGUI eta;
+            if (existing != null)
             {
-                return;
+                eta = existing.GetComponent<TextMeshProUGUI>();
             }
-
-            var title = parent.Find("TitleText")?
-                .GetComponent<LocalizedTextMeshPro>();
-
-            if (title == null)
+            else
             {
-                return;
+                var obj = new GameObject(EtaObjectName);
+                obj.SetActive(false);
+                eta = obj.AddComponent<TextMeshProUGUI>();
+                obj.transform.SetParent(timeArea, false);
+                obj.layer = source.gameObject.layer;
             }
+            if (eta == null) return null;
 
-            title.text = "参考時間\n完了予定";
-
-            title.lineSpacing = -8f;
-            title.fontSize = 24f;
-        }
-
-        private static void SetupTimeArea(UIWindmillCraftCountDialog instance)
-        {
-            var timeArea =
-                instance.timeText.transform.parent?.GetComponent<RectTransform>();
-
-            if (timeArea != null)
-            {
-                timeArea.sizeDelta =
-                    new Vector2(timeArea.sizeDelta.x, 72f);
-            }
-
-            instance.timeText.rectTransform.sizeDelta =
-                new Vector2(
-                    instance.timeText.rectTransform.sizeDelta.x,
-                    64f
-                );
-
-            instance.timeText.lineSpacing = -8f;
-            instance.timeText.fontSize = 24f;
-        }
-
-        private static int ParseDurationMinutes(string text)
-        {
-            int total = 0;
-
-            var dayMatch =
-                System.Text.RegularExpressions.Regex.Match(text, @"(\d+)日");
-
-            if (dayMatch.Success)
-            {
-                total += int.Parse(dayMatch.Groups[1].Value) * 24 * 60;
-            }
-
-            var hourMatch =
-                System.Text.RegularExpressions.Regex.Match(text, @"(\d+)時間");
-
-            if (hourMatch.Success)
-            {
-                total += int.Parse(hourMatch.Groups[1].Value) * 60;
-            }
-
-            var minuteMatch =
-                System.Text.RegularExpressions.Regex.Match(text, @"(\d+)分");
-
-            if (minuteMatch.Success)
-            {
-                total += int.Parse(minuteMatch.Groups[1].Value);
-            }
-
-            return total;
+            // Dedicated row directly below the native one-line process-time area.
+            // Stretch across that whole area, leaving 12 units of padding each side.
+            // Parenting to the native area also handles dialog destruction/recreation.
+            var rect = eta.rectTransform;
+            rect.anchorMin = new Vector2(0f, 0f);
+            rect.anchorMax = new Vector2(1f, 0f);
+            rect.pivot = new Vector2(0.5f, 1f);
+            rect.anchoredPosition = new Vector2(0f, -6f);
+            rect.sizeDelta = new Vector2(-24f, 44f);
+            rect.localScale = Vector3.one;
+            return eta;
         }
     }
 }

@@ -18,8 +18,6 @@ namespace WindmillETA
 
             Harmony harmony = new Harmony("com.icy.windmilleta");
             harmony.PatchAll();
-
-            Log.LogInfo("WindmillETA patches applied!");
         }
     }
 }
