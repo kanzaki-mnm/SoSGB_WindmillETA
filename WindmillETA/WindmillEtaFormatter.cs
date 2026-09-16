@@ -4,51 +4,47 @@ namespace WindmillETA
 {
     public static class WindmillEtaFormatter
     {
-        public static string Format(BokuMonoDateTime now, BokuMonoDateTime end)
+        public static string Format(BokuMonoDateTime now, BokuMonoDateTime end, LocalizedTextMeshPro context = null)
         {
             bool isToday =
                 now.Year == end.Year &&
                 now.Month == end.Month &&
                 now.Day == end.Day;
 
+            var time = FormatTime(end);
             if (isToday)
             {
-                // 今日中に完成する場合は日付を省略
-                return $"{end.Hour:D2}:{end.Minute:D2}";
+                return time;
             }
 
-            var season = GetSeasonName(end.Month);
-            var dayOfWeek = GetDayOfWeekName(end.DayOfWeek);
+            if (WindmillNativeDateFormatter.TryFormat(end, context, out var date))
+            {
+                return date + " " + time;
+            }
 
-            // 完成が明日以降の場合は季節と曜日を表示
-            return $"{season}{end.Day}日({dayOfWeek}) {end.Hour:D2}:{end.Minute:D2}";
+            // Last-resort numeric game date; no language files are needed.
+            return string.Format(System.Globalization.CultureInfo.InvariantCulture,
+                "{0}/{1}/{2} {3}", end.Year, end.Month, end.Day, time);
         }
 
-        private static string GetSeasonName(int month)
+        private static string FormatTime(BokuMonoDateTime end)
         {
-            return month switch
+            // Read the live game setting on each update. Do not depend on TimeFormat
+            // or cache a clock string that could outlive a notation/language change.
+            var notation = OptionManager.Instance?.OptionSystem?.OptionTimeNotation;
+            var use12Hour = notation != null &&
+                notation.TimeNotationType == OptionSetting.TimeNotationType._12Hour;
+            string period = null;
+            if (use12Hour)
             {
-                1 => "はる",
-                2 => "なつ",
-                3 => "あき",
-                4 => "ふゆ",
-                _ => "?"
-            };
-        }
+                var languageManager = LanguageManager.Instance;
+                if (languageManager != null)
+                    period = languageManager.GetDateTimeText(end.Hour < 12
+                        ? LanguageManager.DateTime.Am : LanguageManager.DateTime.Pm);
+            }
 
-        private static string GetDayOfWeekName(Il2CppSystem.DayOfWeek day)
-        {
-            return day switch
-            {
-                Il2CppSystem.DayOfWeek.Sunday => "日",
-                Il2CppSystem.DayOfWeek.Monday => "月",
-                Il2CppSystem.DayOfWeek.Tuesday => "火",
-                Il2CppSystem.DayOfWeek.Wednesday => "水",
-                Il2CppSystem.DayOfWeek.Thursday => "木",
-                Il2CppSystem.DayOfWeek.Friday => "金",
-                Il2CppSystem.DayOfWeek.Saturday => "土",
-                _ => "?"
-            };
+            // Until the setting is available (or if it is None), retain the old 24h display.
+            return WindmillClockText.Format(end.Hour, end.Minute, use12Hour, period);
         }
     }
 }
